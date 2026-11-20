@@ -88,33 +88,65 @@ def load_sales(csv_path: str | Path) -> list[Sale]:
     return sorted(sales, key=lambda sale: sale.timestamp)
 
 
-def make_plan(sales: Iterable[Sale], hours_to_cover: float, safety_buffer: float) -> dict[str, float | int | str]:
-    """Calculate a transparent forecast from observed milk use per elapsed hour."""
+def apply_coverage(sales: Iterable[Sale], coverage_percent: float) -> list[Sale]:
+    """Scale logged milk up when the log is known to miss part of the real milk use.
+
+    Example: the owner really used 7.9 L but the log counted 6.67 L, so
+    coverage_percent is about 84 and every row's milk is scaled by 100 / 84.
+    """
+    if not 0 < coverage_percent <= 100:
+        raise ValueError("Coverage must be above 0 and at most 100 (percent of real milk the log captured).")
+    factor = 100 / coverage_percent
+    return [
+        Sale(sale.timestamp, sale.product, sale.quantity, sale.milk_ml_per_unit * factor)
+        for sale in sales
+    ]
+
+
+def make_plan(
+    sales: Iterable[Sale], now: str, hours_to_cover: float, safety_buffer: float
+) -> dict[str, float | int | str]:
+    """Estimate milk for the next few hours from sales logged in the SAME clock window.
+
+    Example: now="16:30", hours_to_cover=2 uses only the milk logged between
+    16:30 and 18:30 (averaged over the observed days), not the all-day average.
+    """
     observations = list(sales)
     if hours_to_cover <= 0:
         raise ValueError("Hours to cover must be greater than zero.")
     if safety_buffer < 0:
         raise ValueError("Safety buffer cannot be negative.")
+    try:
+        start = datetime.strptime(now.strip(), "%H:%M")
+    except ValueError as error:
+        raise ValueError("Time must look like 16:30 (24-hour HH:MM).") from error
 
-    first, last = observations[0].timestamp, observations[-1].timestamp
-    elapsed_hours = (last - first).total_seconds() / 3600
-    if elapsed_hours <= 0:
-        raise ValueError("Observations need at least two different timestamps.")
+    start_min = start.hour * 60 + start.minute
+    end_min = start_min + hours_to_cover * 60
+    days = len({sale.timestamp.date() for sale in observations})
 
-    total_milk_ml = sum(sale.milk_ml for sale in observations)
-    milk_per_hour_ml = total_milk_ml / elapsed_hours
-    forecast_ml = milk_per_hour_ml * hours_to_cover
-    recommended_ml = forecast_ml * (1 + safety_buffer / 100)
-    products = Counter(sale.product for sale in observations)
+    in_window = [
+        sale
+        for sale in observations
+        if start_min <= sale.timestamp.hour * 60 + sale.timestamp.minute < end_min
+    ]
+    end_label = f"{int(end_min // 60) % 24:02d}:{int(end_min % 60):02d}"
+    if not in_window:
+        raise ValueError(
+            f"No observed sales between {now.strip()} and {end_label}. "
+            "The stall may be closed then, or the log has a gap."
+        )
+
+    window_ml = sum(sale.milk_ml for sale in in_window) / days
+    recommended_ml = window_ml * (1 + safety_buffer / 100)
+    products = Counter(sale.product for sale in in_window)
 
     return {
-        "entries": len(observations),
-        "period_start": first.isoformat(sep=" ", timespec="minutes"),
-        "period_end": last.isoformat(sep=" ", timespec="minutes"),
-        "elapsed_hours": elapsed_hours,
-        "total_milk_ml": total_milk_ml,
-        "milk_per_hour_ml": milk_per_hour_ml,
-        "forecast_ml": forecast_ml,
+        "entries": len(in_window),
+        "days": days,
+        "window_start": now.strip(),
+        "window_end": end_label,
+        "window_ml": window_ml,
         "recommended_ml": recommended_ml,
         "top_product": products.most_common(1)[0][0],
     }
@@ -216,27 +248,26 @@ def multi_day_stock_plan(
 
 
 def format_plan(plan: dict[str, float | int | str], hours_to_cover: float, safety_buffer: float) -> str:
-    """Format one useful output for the stall owner, plus the calculation trail."""
+    """Format the short-term answer for the stall owner, plus the calculation trail."""
     return "\n".join(
         [
-            "MILK PLAN",
-            f"Observed {plan['entries']} sales from {plan['period_start']} to {plan['period_end']}",
-            f"Milk used: {plan['total_milk_ml'] / 1000:.2f} L in {plan['elapsed_hours']:.2f} hours",
-            f"Current use rate: {plan['milk_per_hour_ml'] / 1000:.2f} L/hour",
-            f"Most frequently sold item: {plan['top_product']}",
+            "SHORT-TERM MILK PLAN",
+            f"Window: {plan['window_start']} to {plan['window_end']} ({hours_to_cover:g} hours)",
+            f"Based on {plan['entries']} logged sale(s) in that same window, over {plan['days']} day(s)",
+            f"Milk used in that window: {plan['window_ml'] / 1000:.2f} L",
+            f"Most frequently sold item in that window: {plan['top_product']}",
+            f"Safety buffer: {safety_buffer:g}%",
+            f"RECOMMENDED MILK TO KEEP: {plan['recommended_ml'] / 1000:.2f} L",
             "",
-            f"For the next {hours_to_cover:g} hours:",
-            f"  Expected milk needed: {plan['forecast_ml'] / 1000:.2f} L",
-            f"  Safety buffer: {safety_buffer:g}%",
-            f"  RECOMMENDED MILK TO KEEP: {plan['recommended_ml'] / 1000:.2f} L",
-            "",
-            "This is a short-term estimate from the observed period. It does not account for",
-            "weather, holidays, supplier delays, or an unusual rush.",
+            "Only a few sales may fall in one window, so treat this as a rough guide.",
+            "It does not account for weather, holidays, supplier delays, or an unusual rush.",
         ]
     )
 
 
-def format_daily_stock_plan(plan: dict[str, float | int | str | dict[str, float | int]]) -> str:
+def format_daily_stock_plan(
+    plan: dict[str, float | int | str | dict[str, float | int]], lang: str = "en"
+) -> str:
     """Format the daily recommendation and its calculation trail for the owner."""
     slots = plan["slots"]
     assert isinstance(slots, dict)
@@ -246,6 +277,21 @@ def format_daily_stock_plan(plan: dict[str, float | int | str | dict[str, float 
         if isinstance(values, dict)
     ]
     bulk_share = 100 * float(plan["bulk_milk_ml"]) / float(plan["observed_ml"])
+    stock_l = float(plan["rounded_stock_ml"]) / 1000
+    reserve_l = float(plan["peak_reserve_ml"]) / 1000
+    hour = int(plan["busiest_hour"])
+    if lang == "hi":
+        quick_note = [
+            "RAMESH JI KE LIYE (chhota note)",
+            f"Kal subah {stock_l:.1f} litre doodh se shuru karein.",
+            f"{hour:02d}:00 baje se pehle aakhri {reserve_l:.1f} litre mat kholiye, jab tak zaroorat na pade.",
+        ]
+    else:
+        quick_note = [
+            "RAMESH'S QUICK NOTE",
+            f"Start tomorrow with {stock_l:.1f} L of milk.",
+            f"Do not open the final {reserve_l:.1f} L before {hour:02d}:00 unless needed.",
+        ]
     return "\n".join(
         [
             "NEXT-DAY MILK STOCK PLAN",
@@ -265,9 +311,7 @@ def format_daily_stock_plan(plan: dict[str, float | int | str | dict[str, float 
             f"({float(plan['busiest_hour_ml']) / 1000:.2f} L).",
             f"Before {int(plan['busiest_hour']):02d}:00, keep at least {float(plan['peak_reserve_ml']) / 1000:.1f} L unopened in reserve.",
             "",
-            "RAMESH'S QUICK NOTE",
-            f"Start tomorrow with {float(plan['rounded_stock_ml']) / 1000:.1f} L of milk.",
-            f"Do not open the final {float(plan['peak_reserve_ml']) / 1000:.1f} L before {int(plan['busiest_hour']):02d}:00 unless needed.",
+            *quick_note,
             "",
             "This recommendation is based on one regular working day. Review it after a rain day,",
             "festival, holiday, or any day with an unusual event near the campus.",
@@ -298,7 +342,7 @@ def format_multi_day_stock_plan(
             "",
             "RAMESH'S QUICK NOTE",
             f"Use {float(plan['rounded_stock_ml']) / 1000:.1f} L as the normal opening stock based on these real days.",
-            f"Keep {float(plan['peak_reserve_ml']) / 1000:.1f} L unopened before the afternoon rush.",
+            f"Keep {float(plan['peak_reserve_ml']) / 1000:.1f} L unopened before your busiest hour (see daily mode).",
             "",
             "More real days make this estimate stronger. Keep noting rain, holidays, and college events",
             "because they can change demand more than the average can show.",

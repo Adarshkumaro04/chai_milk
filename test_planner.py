@@ -4,7 +4,14 @@ import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from planner import daily_stock_plan, load_sales, make_plan, multi_day_stock_plan
+from planner import (
+    apply_coverage,
+    daily_stock_plan,
+    format_daily_stock_plan,
+    load_sales,
+    make_plan,
+    multi_day_stock_plan,
+)
 
 
 class PlannerTests(unittest.TestCase):
@@ -24,12 +31,20 @@ class PlannerTests(unittest.TestCase):
             for item in range(20)
         ]
 
-    def test_plan_uses_observed_rate_and_buffer(self):
-        plan = make_plan(self.sales(), hours_to_cover=2, safety_buffer=10)
-        self.assertEqual(plan["entries"], 20)
-        self.assertAlmostEqual(plan["total_milk_ml"], 1600)
-        self.assertAlmostEqual(plan["forecast_ml"], 1600 / 1.9 * 2)
-        self.assertAlmostEqual(plan["recommended_ml"], plan["forecast_ml"] * 1.1)
+    def test_short_term_uses_only_the_matching_clock_window(self):
+        # fixture: 20 sales of 80 ml, 08:00 to 09:54, one every 6 minutes
+        plan = make_plan(self.sales(), now="08:00", hours_to_cover=1, safety_buffer=10)
+        self.assertEqual(plan["entries"], 10)
+        self.assertAlmostEqual(plan["window_ml"], 800)
+        self.assertAlmostEqual(plan["recommended_ml"], 880)
+
+    def test_short_term_rejects_a_window_with_no_sales(self):
+        with self.assertRaisesRegex(ValueError, "No observed sales"):
+            make_plan(self.sales(), now="15:00", hours_to_cover=2, safety_buffer=10)
+
+    def test_short_term_rejects_a_bad_time(self):
+        with self.assertRaisesRegex(ValueError, "HH:MM"):
+            make_plan(self.sales(), now="4pm", hours_to_cover=2, safety_buffer=10)
 
     def test_load_sales_rejects_less_than_twenty_rows(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -95,6 +110,26 @@ class PlannerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             plan = daily_stock_plan(load_sales(self.write_rows(folder, rows)), 15, 500)
         self.assertEqual(plan["busiest_hour"], 18)
+
+    def test_coverage_scales_logged_milk_up(self):
+        from planner import Sale
+        sale = Sale(datetime(2026, 11, 20, 8, 0), "tea", 2, 100)
+        scaled = apply_coverage([sale], 80)
+        self.assertAlmostEqual(scaled[0].milk_ml, 250)
+
+    def test_coverage_outside_range_is_rejected(self):
+        from planner import Sale
+        sale = Sale(datetime(2026, 11, 20, 8, 0), "tea", 1, 80)
+        for bad in (0, -5, 120):
+            with self.assertRaisesRegex(ValueError, "Coverage"):
+                apply_coverage([sale], bad)
+
+    def test_hindi_quick_note_contains_the_stock_number(self):
+        plan = daily_stock_plan(self.sales(), safety_buffer=15, peak_reserve_ml=500)
+        text = format_daily_stock_plan(plan, lang="hi")
+        self.assertIn("litre doodh", text)
+        self.assertIn("2.0", text)
+        self.assertNotIn("RAMESH'S QUICK NOTE", text)
 
 
 if __name__ == "__main__":
