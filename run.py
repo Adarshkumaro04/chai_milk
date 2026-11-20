@@ -56,6 +56,8 @@ def main() -> None:
             print(format_plan(plan, args.hours, args.buffer))
     except ValueError as error:
         parser.exit(2, f"Input error: {error}\n")
+    except FileNotFoundError:
+        parser.exit(2, f"Input error: file not found: {args.data}\n")
 
 
 if __name__ == "__main__":
