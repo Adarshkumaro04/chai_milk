@@ -8,8 +8,8 @@
 - Two timestamped photos:
   - `photos/stall_cup_measure_0750.png` - 20 November 2026, 07:50:12
   - `photos/stall_menu_2045.png` - 20 November 2026, 20:45:08
-- Continuous observation window: I stayed at the stall from 16:30 to 16:50  (at least 20 minutes).
-- Collection method: I logged 24 sales entries from 07:50 to 20:45. For every entry, I recorded the time, product, quantity, and milk used per unit. The irregular 15-50 minute gaps are the real gaps between orders I noted, not fixed time buckets. Lemon-tea rows are recorded with 0 ml because they do not use milk.
+- Continuous observation window: I stayed at the stall from 16:30 to 16:50 (20 minutes). The two photos above were taken at other times during my visits that day.
+- Collection method: I logged 24 sales entries from 07:50 to 20:45. For every entry, I recorded the time, product, quantity, and milk used per unit. The irregular 15-50 minute gaps are the real gaps between orders I noted, not fixed time buckets. Lemon-tea rows are recorded with 0 ml because they do not use milk. All 24 rows were written at the time of the sale.
 
 ## Conversation with Ramesh
 
@@ -55,7 +55,7 @@ The script reproduces these figures from `data.csv`:
 
 ## Field check
 
-The tool recommended 8.0 L. Ramesh bought 9.0 L and used about 7.9 L (1.1 L left at closing), so the recommendation was within 0.1 L of real use, and he over-ordered by about 1 L. My log counted about 84% of his real use, so the 15% buffer is what covers the gap.
+The tool recommended 8.0 L. Ramesh bought 9.0 L and used about 7.9 L (1.1 L left at closing), so the recommendation was within 0.1 L of real use, and he over-ordered by about 1 L. My log counted about 84% of his real use, so the 15% buffer is what covers the gap. This compares the tool to the same day it was built from, so it is a sanity check, not a test of forecasting. A second real day would be the real test.
 
 ## Ramesh's reaction to the plain-language output
 
